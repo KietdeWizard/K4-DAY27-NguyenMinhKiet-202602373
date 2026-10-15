@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 import aiosqlite
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from common.schemas import AuditEntry
 
@@ -25,6 +27,16 @@ SCHEMA_FILE = Path(__file__).resolve().parent.parent / "audit" / "schema.sql"
 def db_path() -> str:
     """Return the SQLite file path (override with HITL_DB_PATH env var)."""
     return os.environ.get("HITL_DB_PATH", "hitl_audit.db")
+
+
+def checkpoint_serializer() -> JsonPlusSerializer:
+    """Allow checkpoint serialization only for the review models in graph state."""
+    return JsonPlusSerializer(
+        allowed_msgpack_modules=[
+            ("common.schemas", "PRAnalysis"),
+            ("common.schemas", "ReviewComment"),
+        ]
+    )
 
 
 async def _ensure_schema(conn: aiosqlite.Connection) -> None:
@@ -45,6 +57,17 @@ async def db_conn() -> AsyncIterator[aiosqlite.Connection]:
     try:
         await _ensure_schema(conn)
         yield conn
+    finally:
+        await conn.close()
+
+
+@asynccontextmanager
+async def checkpoint_saver() -> AsyncIterator[AsyncSqliteSaver]:
+    """Open the LangGraph SQLite saver with only the review models allowlisted."""
+    conn = await aiosqlite.connect(db_path())
+    saver = AsyncSqliteSaver(conn, serde=checkpoint_serializer())
+    try:
+        yield saver
     finally:
         await conn.close()
 

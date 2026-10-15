@@ -33,22 +33,19 @@ class PullRequest:
 
 
 def _token() -> str:
-    tok = os.environ.get("GITHUB_TOKEN")
-    if not tok:
-        raise RuntimeError(
-            "GITHUB_TOKEN is not set. Copy .env.example to .env and paste a Personal "
-            "Access Token (https://github.com/settings/tokens/new) with `public_repo` scope."
-        )
-    return tok
+    return os.environ.get("GITHUB_TOKEN", "")
 
 
 def _headers(accept: str = "application/vnd.github+json") -> dict[str, str]:
-    return {
-        "Authorization": f"Bearer {_token()}",
+    headers = {
         "Accept": accept,
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "Day27-HITL-Lab",
     }
+    token = _token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
 
 
 def parse_pr_url(pr_url: str) -> tuple[str, str, int]:
@@ -102,6 +99,10 @@ def post_review_comment(pr_url: str, body: str) -> None:
 
     Takes the PR URL directly so callers don't need a `PullRequest` object.
     """
+    if not _token():
+        raise RuntimeError(
+            "GITHUB_TOKEN is not set. Add a Personal Access Token to .env before posting comments."
+        )
     owner, repo, number = parse_pr_url(pr_url)
     url = f"{API}/repos/{owner}/{repo}/issues/{number}/comments"
     with httpx.Client(timeout=30.0) as client:

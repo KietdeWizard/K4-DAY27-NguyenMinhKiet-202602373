@@ -25,8 +25,8 @@ This lab builds an agent that auto-triages every PR:
 
 1. The LLM reads the diff and produces a structured review with a **self-reported confidence score**.
 2. **Confidence > 72%** → the agent posts the review comment itself; no human in the loop.
-3. **58–72%** → the agent pauses (`interrupt()`) and shows the reviewer the diff + LLM reasoning + a one-click **approve / reject / edit** panel. On approve, the comment posts.
-4. **< 58%** → the agent **escalates strongly**. It shows the reviewer *specific questions the LLM is uncertain about* ("Why MD5? Is `SYNC_URL` meant to be HTTPS in production?") and waits for answers. Then it re-asks the LLM with the answers in context and posts a **refined** review.
+3. **58–72%** → the agent pauses (`interrupt()`) and shows the reviewer the diff + LLM reasoning + **approve / reject / edit** actions. Edit requires feedback; the agent revises the review with that feedback before posting.
+4. **< 58%** → the agent **escalates strongly**. It shows the reviewer *specific questions the LLM is uncertain about* ("Why MD5? Is `SYNC_URL` meant to be HTTPS in production?") and requires an answer to every question. Then it re-asks the LLM with the answers in context and asks the reviewer to approve, reject, or request edits to the refined review.
 
 Every step writes a row to a structured audit table — every routing decision, every human interaction, every LLM call — so the team can replay any session for compliance or debugging.
 
@@ -142,12 +142,12 @@ The SQLite file `hitl_audit.db` is created on demand when exercise 4 runs.
 
 Two PRs are kept at the public repo **<https://github.com/VinUni-AI20k/PR-Demo>** for testing:
 
-| PR | URL                                                                  | Expected branch          |
+| PR | URL                                                                  | Intended branch          |
 |----|----------------------------------------------------------------------|--------------------------|
 | #1 — Add task priority field        | `https://github.com/VinUni-AI20k/PR-Demo/pull/1` | `human_approval` (~65%) |
 | #2 — Add user login + cloud sync    | `https://github.com/VinUni-AI20k/PR-Demo/pull/2` | `escalate` (<58%)       |
 
-PR #1 is mechanical (~40 lines) with one open question (schema migration). PR #2 has multiple red flags (MD5 password hashing, plaintext token storage, SQL injection in `Storage.add`, hard-coded user_id, no tests for new code) — the LLM should drop into the escalate branch and ask the reviewer specific questions.
+PR #1 is mechanical (~40 lines) with one open question (schema migration). PR #2 has multiple red flags (MD5 password hashing, plaintext token storage, SQL injection in `Storage.add`, hard-coded user_id, no tests for new code) and is intended to exercise escalation. Confidence is self-reported by the configured model, so actual demo routing can vary; verify the threshold boundaries with controlled confidence values when testing routing.
 
 ## The 5 exercises
 
@@ -164,11 +164,11 @@ uv run python exercises/exercise_1_confidence.py --pr https://github.com/VinUni-
 uv run python exercises/exercise_1_confidence.py --pr https://github.com/VinUni-AI20k/PR-Demo/pull/2
 ```
 
-Success = the two PRs print **different** branches.
+The selected branch follows the model's confidence and the configured thresholds. Since confidence is model-reported, the demo PRs may not always choose different branches.
 
 ### Exercise 2 — HITL with `interrupt()` (`exercise_2_hitl.py`)
 
-Turn the `human_approval` node from a placeholder into a real pause-and-ask. Use `interrupt(payload)` inside the node, then resume the graph from `main()` with `Command(resume=<user_answer>)`.
+Turn the `human_approval` node from a placeholder into a real pause-and-ask. Use `interrupt(payload)` inside the node, then resume the graph from `main()` with `Command(resume=<user_answer>)`. Approve posts the review, Reject declines it, and Edit requires feedback and asks the LLM to revise the review before posting.
 
 **You implement:** `node_human_approval` (call `interrupt()` with diff + reasoning), graph compile with `MemorySaver` checkpointer, and the resume loop in `main()`:
 ```python
@@ -185,7 +185,7 @@ uv run python exercises/exercise_2_hitl.py --pr https://github.com/VinUni-AI20k/
 
 ### Exercise 3 — Escalation with reviewer Q&A (`exercise_3_escalation.py`)
 
-When confidence is low, the agent shouldn't ask "approve/reject" — it should ask **specific questions** to gather context, then re-run the analysis with the answers.
+When confidence is low, the agent shouldn't initially ask "approve/reject" — it should ask **specific questions** to gather context, then re-run the analysis with the answers. The reviewer then gets a final approval/reject/edit card for the refined review.
 
 **You implement:** prompt the LLM to populate `escalation_questions` when low-confidence, `node_escalate` (calls `interrupt(kind="escalation")` with the questions), and `node_synthesize` (re-prompts the LLM using the reviewer's answers to produce a refined review).
 
@@ -244,8 +244,8 @@ The same three confidence buckets apply, but the *human experience* changes per 
 | Confidence | Branch | What the reviewer sees in the UI |
 |---|---|---|
 | **> 72%** | `auto_approve` | A success card: confidence + LLM summary + a "View comment on GitHub" link. Reviewer does **nothing** — agent already posted. |
-| **58–72%** | `human_approval` | The normal approval card: diff, LLM reasoning, list of comments + three buttons **Approve / Reject / Edit**. One click and the comment posts. |
-| **< 58%** | `escalate` | The strong-escalation card: risk factors highlighted + a form with the LLM's specific questions. Reviewer fills answers, agent re-synthesizes, then shows the refined review for a final confirm. |
+| **58–72%** | `human_approval` | The normal approval card: diff, LLM reasoning, list of comments + **Approve / Reject / Edit**. Edit requires feedback and revises the review before it posts. |
+| **< 58%** | `escalate` | The strong-escalation card: risk factors highlighted + a form with the LLM's specific questions. Every question requires an answer; the agent re-synthesizes and requests final approval of the refined review. |
 
 **You implement** (`app.py` at the repo root):
 
@@ -254,6 +254,7 @@ The same three confidence buckets apply, but the *human experience* changes per 
 - A resume call: `app.ainvoke(Command(resume=user_choice_or_answers), cfg)`.
 - `thread_id` persisted in `st.session_state` so reloading the page or jumping back to it keeps the session.
 - A small "recent sessions" sidebar driven by `audit.replay.list_threads`.
+- Selecting a recent session restores its pending interrupt or final result from the LangGraph checkpoint.
 - Add `streamlit` to `pyproject.toml` dependencies.
 
 A skeleton with `# TODO:` markers is provided in `app.py`. Run with:
